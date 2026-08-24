@@ -61,6 +61,20 @@ const V = []const u8;
 
 const node = struct { key: K, value: V, forward: []?*node };
 
+pub const Iterator = struct {
+    current: ?*node,
+    pub fn init(startNode: ?*node) !Iterator {
+        const it = Iterator{ .current = startNode };
+        return it;
+    }
+
+    pub fn next(self: *Iterator) ?*node {
+        const n = self.current orelse return null;
+        self.current = n.forward[0];
+        return n;
+    }
+};
+
 fn makeNode(a: std.mem.Allocator, l: usize, k: K, v: V) !*node {
     const n = try a.create(node);
     n.* = .{ .key = k, .value = v, .forward = try a.alloc(?*node, l + 1) };
@@ -149,6 +163,121 @@ pub const SkipList = struct {
         }
         self.len += 1;
     }
+
+    pub fn contains(self: *SkipList, key: K) bool {
+        var x = self.header;
+        var i = self.level;
+
+        while (true) {
+            while (x.forward[i]) |next| {
+                if (std.mem.order(u8, next.key, key) != .lt) {
+                    break;
+                }
+
+                x = next;
+            }
+            if (i == 0) {
+                break;
+            }
+            i -= 1;
+        }
+        if (x.forward[0]) |next| {
+            if (std.mem.eql(u8, next.key, key)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    pub fn remove(self: *SkipList, key: K) void {
+        var x = self.header;
+        var i = self.level;
+
+        var update: [MAX_LEVELS]*node = undefined;
+        while (true) {
+            while (x.forward[i]) |next| {
+                if (std.mem.order(u8, next.key, key) != .lt) {
+                    break;
+                }
+                x = next;
+            }
+            update[i] = x;
+            if (i == 0) {
+                break;
+            }
+            i -= 1;
+        }
+
+        const target = x.forward[0] orelse return;
+
+        if (!std.mem.eql(u8, target.key, key)) {
+            return;
+        }
+
+        i = 0;
+        while (i <= self.level) : (i += 1) {
+            if (update[i].forward[i] == target) {
+                update[i].forward[i] = target.forward[i];
+            }
+        }
+        self.allocator.destroy(target);
+
+        while (self.level > 0 and self.header.forward[self.level] == null) {
+            self.level -= 1;
+        }
+    }
+
+    pub fn find(self: *SkipList, key: K) ?*node {
+        var x = self.header;
+        var i = self.level;
+
+        while (true) {
+            while (x.forward[i]) |next| {
+                if (std.mem.order(u8, next.key, key) != .lt) {
+                    break;
+                }
+                x = next;
+            }
+            if (i == 0) {
+                break;
+            }
+            i -= 1;
+        }
+        if (x.forward[0]) |next| {
+            if (std.mem.eql(u8, next.key, key)) {
+                return next;
+            }
+        }
+        return null;
+    }
+
+    // lowerBound(x) -> first value >= x
+    pub fn lowerBound(self: *SkipList, key: K) ?*node {
+        var x = self.header;
+        var i = self.level;
+        var update: [MAX_LEVELS]*node = undefined;
+
+        while (true) {
+            while (x.forward[i]) |next| {
+                if (std.mem.order(u8, next.key, key) != .lt) {
+                    break;
+                }
+                x = next;
+            }
+            update[i] = x;
+            if (i == 0) {
+                break;
+            }
+            i -= 1;
+        }
+        return x.forward[0];
+    }
+
+    pub fn iterator(self: *SkipList, start_key: K) !Iterator {
+        const startNode = self.lowerBound(start_key);
+        return try Iterator.init(startNode);
+    }
 };
 
 test "put and get" {
@@ -156,4 +285,51 @@ test "put and get" {
 
     try sl.put("foo", "bar");
     try std.testing.expectEqual("bar", sl.get("foo"));
+}
+
+test "get missing key" {
+    var sl = try SkipList.init(std.heap.page_allocator);
+
+    try std.testing.expectEqual(null, sl.get("foo"));
+}
+
+test "put update" {
+    var sl = try SkipList.init(std.heap.page_allocator);
+
+    try sl.put("foo", "bar");
+    try std.testing.expectEqual("bar", sl.get("foo"));
+    try sl.put("foo", "baz");
+    try std.testing.expectEqual("baz", sl.get("foo"));
+}
+
+test "contains" {
+    var sl = try SkipList.init(std.heap.page_allocator);
+
+    try sl.put("foo", "bar");
+    try std.testing.expectEqual(true, sl.contains("foo"));
+    try std.testing.expectEqual(false, sl.contains("bar"));
+}
+
+test "remove" {
+    var sl = try SkipList.init(std.heap.page_allocator);
+
+    try sl.put("foo", "bar");
+    try std.testing.expectEqual(true, sl.contains("foo"));
+    sl.remove("foo");
+    try std.testing.expectEqual(false, sl.contains("foo"));
+}
+
+test "iterate" {
+    var sl = try SkipList.init(std.heap.page_allocator);
+
+    try sl.put("100", "bar");
+    try sl.put("101", "bar");
+    try sl.put("102", "bar");
+    try sl.put("103", "bar");
+    try sl.put("104", "bar");
+
+    var iter = try sl.iterator("101");
+    while (iter.next()) |n| {
+        std.debug.print("key: {s}, value: {s}\n", .{ n.key, n.value });
+    }
 }
