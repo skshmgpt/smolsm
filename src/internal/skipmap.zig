@@ -36,7 +36,7 @@
 // iterator()
 // get(key u) -> ?V
 // contains(key KeyType) -> bool
-// remove(key KeyType)
+// remove(key KeyType) // implemented by tombstone mechanism
 // deinit()
 //
 //
@@ -59,7 +59,7 @@ fn randomLevel(prng: *std.Random.DefaultPrng) usize {
 const K = []const u8;
 const V = []const u8;
 
-const node = struct { key: K, value: V, forward: []?*node };
+const node = struct { key: K, value: V, forward: []?*node, dead: bool };
 
 pub const Iterator = struct {
     current: ?*node,
@@ -75,9 +75,9 @@ pub const Iterator = struct {
     }
 };
 
-fn makeNode(a: std.mem.Allocator, l: usize, k: K, v: V) !*node {
+fn makeNode(a: std.mem.Allocator, l: usize, k: K, v: V, dead: bool) !*node {
     const n = try a.create(node);
-    n.* = .{ .key = k, .value = v, .forward = try a.alloc(?*node, l + 1) };
+    n.* = .{ .key = k, .value = v, .forward = try a.alloc(?*node, l + 1), .dead = dead };
     @memset(n.forward, null);
     return n;
 }
@@ -91,8 +91,61 @@ pub const SkipMap = struct {
 
     allocator: std.mem.Allocator,
 
+    fn putNode(self: *SkipMap, n: *node) !void {
+        var x = self.header;
+        var i = self.level;
+        var update: [MAX_LEVELS]*node = undefined;
+
+        while (true) {
+            while (true) {
+                while (x.forward[i]) |next| {
+                    if (std.mem.order(u8, next.key, n.key) != .lt) {
+                        break;
+                    }
+                    x = next;
+                }
+                update[i] = x;
+                if (i == 0) {
+                    break;
+                }
+                i -= 1;
+            }
+            update[i] = x;
+            if (i == 0) {
+                break;
+            }
+            i -= 1;
+        }
+        if (x.forward[0]) |next| {
+            if (std.mem.eql(u8, next.key, n.key)) {
+                next.value = n.value;
+                return;
+            }
+        }
+
+        const newLevel = randomLevel(&self.prng);
+
+        if (newLevel > self.level) {
+            i = self.level + 1;
+            while (i <= newLevel) {
+                update[i] = self.header;
+                i += 1;
+            }
+            self.level = newLevel;
+        }
+        x = try makeNode(self.allocator, newLevel, n.key, n.value, n.dead);
+
+        i = 0;
+        while (i <= newLevel) {
+            x.forward[i] = update[i].forward[i];
+            update[i].forward[i] = x;
+            i += 1;
+        }
+        self.len += 1;
+    }
+
     pub fn init(allocator: std.mem.Allocator) !SkipMap {
-        const sl = SkipMap{ .header = try makeNode(allocator, MAX_LEVELS - 1, undefined, undefined), .level = 0, .len = 0, .prng = std.Random.DefaultPrng.init(123456), .allocator = allocator };
+        const sl = SkipMap{ .header = try makeNode(allocator, MAX_LEVELS - 1, undefined, undefined, false), .level = 0, .len = 0, .prng = std.Random.DefaultPrng.init(123456), .allocator = allocator };
         return sl;
     }
 
@@ -111,7 +164,7 @@ pub const SkipMap = struct {
         }
 
         if (x.forward[0]) |next| {
-            if (std.mem.eql(u8, next.key, key)) {
+            if (std.mem.eql(u8, next.key, key) and !next.dead) {
                 return next.value;
             }
         }
@@ -119,56 +172,13 @@ pub const SkipMap = struct {
     }
 
     pub fn put(self: *SkipMap, key: K, val: V) !void {
-        var x = self.header;
-        var i = self.level;
-        var update: [MAX_LEVELS]*node = undefined;
+        const n = try makeNode(self.allocator, 0, key, val, false);
+        try self.putNode(n);
+    }
 
-        while (true) {
-            while (true) {
-                while (x.forward[i]) |next| {
-                    if (std.mem.order(u8, next.key, key) != .lt) {
-                        break;
-                    }
-                    x = next;
-                }
-                update[i] = x;
-                if (i == 0) {
-                    break;
-                }
-                i -= 1;
-            }
-            update[i] = x;
-            if (i == 0) {
-                break;
-            }
-            i -= 1;
-        }
-        if (x.forward[0]) |next| {
-            if (std.mem.eql(u8, next.key, key)) {
-                next.value = val;
-                return;
-            }
-        }
-
-        const newLevel = randomLevel(&self.prng);
-
-        if (newLevel > self.level) {
-            i = self.level + 1;
-            while (i <= newLevel) {
-                update[i] = self.header;
-                i += 1;
-            }
-            self.level = newLevel;
-        }
-        x = try makeNode(self.allocator, newLevel, key, val);
-
-        i = 0;
-        while (i <= newLevel) {
-            x.forward[i] = update[i].forward[i];
-            update[i].forward[i] = x;
-            i += 1;
-        }
-        self.len += 1;
+    fn putTombStone(self: *SkipMap, key: K, val: V) !void {
+        const n = try makeNode(self.allocator, 0, key, val, true);
+        try self.putNode(n);
     }
 
     pub fn contains(self: *SkipMap, key: K) bool {
@@ -189,7 +199,7 @@ pub const SkipMap = struct {
             i -= 1;
         }
         if (x.forward[0]) |next| {
-            if (std.mem.eql(u8, next.key, key)) {
+            if (std.mem.eql(u8, next.key, key) and !next.dead) {
                 return true;
             }
         }
@@ -197,41 +207,12 @@ pub const SkipMap = struct {
         return false;
     }
 
-    pub fn remove(self: *SkipMap, key: K) void {
-        var x = self.header;
-        var i = self.level;
-
-        var update: [MAX_LEVELS]*node = undefined;
-        while (true) {
-            while (x.forward[i]) |next| {
-                if (std.mem.order(u8, next.key, key) != .lt) {
-                    break;
-                }
-                x = next;
-            }
-            update[i] = x;
-            if (i == 0) {
-                break;
-            }
-            i -= 1;
-        }
-
-        const target = x.forward[0] orelse return;
-
-        if (!std.mem.eql(u8, target.key, key)) {
-            return;
-        }
-
-        i = 0;
-        while (i <= self.level) : (i += 1) {
-            if (update[i].forward[i] == target) {
-                update[i].forward[i] = target.forward[i];
-            }
-        }
-        self.allocator.destroy(target);
-
-        while (self.level > 0 and self.header.forward[self.level] == null) {
-            self.level -= 1;
+    pub fn remove(self: *SkipMap, key: K) !void {
+        const entry = self.find(key);
+        if (entry) |e| {
+            e.dead = true;
+        } else {
+            try self.putTombStone(key, "TOMBSTONE");
         }
     }
 
@@ -322,7 +303,7 @@ test "remove" {
 
     try sl.put("foo", "bar");
     try std.testing.expectEqual(true, sl.contains("foo"));
-    sl.remove("foo");
+    try sl.remove("foo");
     try std.testing.expectEqual(false, sl.contains("foo"));
 }
 
