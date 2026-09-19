@@ -2,7 +2,6 @@
 // get(key)
 // remove(key)
 // contains(key)
-// len()
 //
 //
 
@@ -26,7 +25,6 @@
 //
 // SkipMap {
 //  head *Node
-//  length
 //  level
 //  ....
 // }
@@ -61,22 +59,40 @@ const V = []const u8;
 
 const node = struct { key: K, value: V, forward: []?*node, dead: bool };
 
+pub const Entry = struct {
+    key: K,
+    val: V,
+};
+
 pub const Iterator = struct {
     current: ?*node,
-    pub fn init(startNode: ?*node) !Iterator {
-        const it = Iterator{ .current = startNode };
+    notSkipDead: bool,
+    pub fn init(startNode: ?*node, notSkipDead: bool) Iterator {
+        const it = Iterator{ .current = startNode, .notSkipDead = notSkipDead };
         return it;
     }
 
-    pub fn next(self: *Iterator) ?*node {
-        const n = self.current orelse return null;
-        self.current = n.forward[0];
-        return n;
+    pub fn next(self: *Iterator) ?Entry {
+        while (self.current) |n| {
+            self.current = n.forward[0];
+
+            if (!self.notSkipDead and n.dead) {
+                continue;
+            }
+
+            return .{
+                .key = n.key,
+                .val = n.value,
+            };
+        }
+
+        return null;
     }
 };
 
 fn makeNode(a: std.mem.Allocator, l: usize, k: K, v: V, dead: bool) !*node {
     const n = try a.create(node);
+    errdefer a.destroy(n);
     n.* = .{ .key = k, .value = v, .forward = try a.alloc(?*node, l + 1), .dead = dead };
     @memset(n.forward, null);
     return n;
@@ -85,13 +101,12 @@ fn makeNode(a: std.mem.Allocator, l: usize, k: K, v: V, dead: bool) !*node {
 pub const SkipMap = struct {
     header: *node,
     level: usize,
-    len: usize,
 
     prng: std.Random.DefaultPrng,
 
     allocator: std.mem.Allocator,
 
-    fn putNode(self: *SkipMap, n: *node) !void {
+    fn putEntry(self: *SkipMap, key: K, val: V, dead: bool) !void {
         var x = self.header;
         var i = self.level;
         var update: [MAX_LEVELS]*node = undefined;
@@ -99,7 +114,7 @@ pub const SkipMap = struct {
         while (true) {
             while (true) {
                 while (x.forward[i]) |next| {
-                    if (std.mem.order(u8, next.key, n.key) != .lt) {
+                    if (std.mem.order(u8, next.key, key) != .lt) {
                         break;
                     }
                     x = next;
@@ -117,8 +132,9 @@ pub const SkipMap = struct {
             i -= 1;
         }
         if (x.forward[0]) |next| {
-            if (std.mem.eql(u8, next.key, n.key)) {
-                next.value = n.value;
+            if (std.mem.eql(u8, next.key, key)) {
+                next.value = val;
+                next.dead = false;
                 return;
             }
         }
@@ -133,7 +149,7 @@ pub const SkipMap = struct {
             }
             self.level = newLevel;
         }
-        x = try makeNode(self.allocator, newLevel, n.key, n.value, n.dead);
+        x = try makeNode(self.allocator, newLevel, key, val, dead);
 
         i = 0;
         while (i <= newLevel) {
@@ -141,11 +157,10 @@ pub const SkipMap = struct {
             update[i].forward[i] = x;
             i += 1;
         }
-        self.len += 1;
     }
 
     pub fn init(allocator: std.mem.Allocator) !SkipMap {
-        const sl = SkipMap{ .header = try makeNode(allocator, MAX_LEVELS - 1, undefined, undefined, false), .level = 0, .len = 0, .prng = std.Random.DefaultPrng.init(123456), .allocator = allocator };
+        const sl = SkipMap{ .header = try makeNode(allocator, MAX_LEVELS - 1, undefined, undefined, false), .level = 0, .prng = std.Random.DefaultPrng.init(123456), .allocator = allocator };
         return sl;
     }
 
@@ -172,13 +187,11 @@ pub const SkipMap = struct {
     }
 
     pub fn put(self: *SkipMap, key: K, val: V) !void {
-        const n = try makeNode(self.allocator, 0, key, val, false);
-        try self.putNode(n);
+        try self.putEntry(key, val, false);
     }
 
-    fn putTombStone(self: *SkipMap, key: K, val: V) !void {
-        const n = try makeNode(self.allocator, 0, key, val, true);
-        try self.putNode(n);
+    fn putTombStone(self: *SkipMap, key: K) !void {
+        try self.putEntry(key, "TOMBSTONE", true);
     }
 
     pub fn contains(self: *SkipMap, key: K) bool {
@@ -212,11 +225,11 @@ pub const SkipMap = struct {
         if (entry) |e| {
             e.dead = true;
         } else {
-            try self.putTombStone(key, "TOMBSTONE");
+            try self.putTombStone(key);
         }
     }
 
-    pub fn find(self: *SkipMap, key: K) ?*node {
+    fn find(self: *SkipMap, key: K) ?*node {
         var x = self.header;
         var i = self.level;
 
@@ -264,7 +277,7 @@ pub const SkipMap = struct {
 
     pub fn iterator(self: *SkipMap, start_key: K) !Iterator {
         const startNode = self.lowerBound(start_key);
-        return try Iterator.init(startNode);
+        return Iterator.init(startNode, false);
     }
 };
 
@@ -273,6 +286,15 @@ test "put and get" {
 
     try sl.put("foo", "bar");
     try std.testing.expectEqual("bar", sl.get("foo"));
+}
+
+test "put remove put and get" {
+    var sl = try SkipMap.init(std.heap.page_allocator);
+
+    try sl.put("foo", "bar");
+    try sl.remove("foo");
+    try sl.put("foo", "baz");
+    try std.testing.expectEqual("baz", sl.get("foo"));
 }
 
 test "get missing key" {
@@ -318,7 +340,23 @@ test "iterate" {
 
     var iter = try sl.iterator("101");
     while (iter.next()) |n| {
-        std.debug.print("key: {s}, value: {s}\n", .{ n.key, n.value });
+        std.debug.print("key: {s}, value: {s}\n", .{ n.key, n.val });
+    }
+}
+
+test "iterate over removed" {
+    var sl = try SkipMap.init(std.heap.page_allocator);
+
+    try sl.put("100", "bar");
+    try sl.put("101", "bar");
+    try sl.put("102", "bar");
+    try sl.put("103", "bar");
+    try sl.put("104", "bar");
+    try sl.remove("102");
+
+    var iter = try sl.iterator("101");
+    while (iter.next()) |n| {
+        std.debug.print("key: {s}, value: {s}\n", .{ n.key, n.val });
     }
 }
 
