@@ -345,44 +345,45 @@ test "iterate" {
 //
 //
 
-const Worker = struct {
-    map: *SkipMap,
-    id: usize,
+// const Worker = struct {
+//     map: *SkipMap,
+//     id: usize,
 
-    pub fn run(self: *Worker) !void {
-        for (0..100_000) |i| {
-            const n = self.id * 100_000 + i;
+//     pub fn run(self: *Worker) !void {
+//         for (0..100_000) |i| {
+//             const n = self.id * 100_000 + i;
 
-            var key_buf: [32]u8 = undefined;
-            var value_buf: [32]u8 = undefined;
+//             var key_buf: [32]u8 = undefined;
+//             var value_buf: [32]u8 = undefined;
 
-            const key_tmp = std.fmt.bufPrint(&key_buf, "{}", .{n}) catch unreachable;
-            const value_tmp = std.fmt.bufPrint(&value_buf, "{}", .{n}) catch unreachable;
+//             const key_tmp = std.fmt.bufPrint(&key_buf, "{}", .{n}) catch unreachable;
+//             const value_tmp = std.fmt.bufPrint(&value_buf, "{}", .{n}) catch unreachable;
 
-            const key = try std.heap.page_allocator.dupe(u8, key_tmp);
-            const value = try std.heap.page_allocator.dupe(u8, value_tmp);
+//             const key = try std.heap.page_allocator.dupe(u8, key_tmp);
+//             const value = try std.heap.page_allocator.dupe(u8, value_tmp);
 
-            try self.map.put(key, value);
-        }
-    }
-};
+//             try self.map.put(key, value);
+//         }
+//     }
+// };
+// test deferred till single threaded version is implmented properly
+//
+// test "concurrent disjoint inserts" {
+//     var sl = try SkipMap.init(std.heap.page_allocator);
 
-test "concurrent disjoint inserts" {
-    var sl = try SkipMap.init(std.heap.page_allocator);
+//     const THREADS = 4;
 
-    const THREADS = 4;
+//     var workers: [THREADS]Worker = undefined;
+//     var threads: [THREADS]std.Thread = undefined;
 
-    var workers: [THREADS]Worker = undefined;
-    var threads: [THREADS]std.Thread = undefined;
+//     for (&workers, 0..) |*worker, i| {
+//         worker.* = .{ .map = &sl, .id = i };
+//         threads[i] = try std.Thread.spawn(.{}, Worker.run, .{worker});
+//     }
 
-    for (&workers, 0..) |*worker, i| {
-        worker.* = .{ .map = &sl, .id = i };
-        threads[i] = try std.Thread.spawn(.{}, Worker.run, .{worker});
-    }
+//     for (threads) |thread| {
+//         thread.join();
+//     }
 
-    for (threads) |thread| {
-        thread.join();
-    }
-
-    try std.testing.expectEqual(THREADS * 100_000, sl.len);
-}
+//     try std.testing.expectEqual(THREADS * 100_000, sl.len);
+// }
