@@ -346,15 +346,22 @@ test "remove" {
 test "iterate" {
     var sl = try SkipMap.init(std.heap.page_allocator);
 
-    try sl.put("100", "bar");
-    try sl.put("101", "bar");
-    try sl.put("102", "bar");
-    try sl.put("103", "bar");
-    try sl.put("104", "bar");
+    const test_entries = [_]Entry{
+        .{ .key = "100", .val = "foo" },
+        .{ .key = "101", .val = "bar" },
+        .{ .key = "102", .val = "baz" },
+    };
 
-    var iter = try sl.iterator("101");
+    for (test_entries) |e| {
+        try sl.put(e.key, e.val);
+    }
+
+    var i: usize = 0;
+    var iter = try sl.iterator(test_entries[i].key);
     while (iter.next()) |n| {
-        std.debug.print("key: {s}, value: {s}\n", .{ n.key, n.val });
+        try std.testing.expectEqual(n.key, test_entries[i].key);
+        try std.testing.expectEqual(n.val, test_entries[i].val);
+        i += 1;
     }
 }
 
