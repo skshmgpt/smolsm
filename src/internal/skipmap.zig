@@ -164,6 +164,20 @@ pub const SkipMap = struct {
         return sl;
     }
 
+    pub fn deinit(self: *SkipMap) void {
+        // iterate through smalles unit that can be deallocated directly
+        // looping through level 0 list , destroying each one by one
+        var current = self.header.forward[0];
+        while (current) |n| {
+            const next = n.forward[0];
+            self.allocator.free(n.forward);
+            self.allocator.destroy(n);
+            current = next;
+        }
+        self.allocator.free(self.header.forward);
+        self.allocator.destroy(self.header);
+    }
+
     pub fn get(self: *SkipMap, key: K) ?V {
         var i = self.level;
         var x = self.header;
@@ -358,6 +372,16 @@ test "iterate over removed" {
     while (iter.next()) |n| {
         std.debug.print("key: {s}, value: {s}\n", .{ n.key, n.val });
     }
+}
+
+test "deinit frees all memory" {
+    const allocator = std.testing.allocator;
+    var sl = try SkipMap.init(allocator);
+    try sl.put("100", "bar");
+    try sl.put("101", "bar");
+    try sl.put("102", "bar");
+    try sl.put("103", "bar");
+    sl.deinit();
 }
 
 // contention tests
