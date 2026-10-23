@@ -54,8 +54,8 @@ fn randomLevel(prng: *std.Random.DefaultPrng) usize {
     return level;
 }
 
-const K = []const u8;
-const V = []const u8;
+pub const K = []const u8;
+pub const V = []const u8;
 
 const node = struct { key: K, value: V, forward: []?*node, dead: bool };
 
